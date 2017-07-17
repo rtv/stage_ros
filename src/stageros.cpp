@@ -48,6 +48,10 @@
 #include <sensor_msgs/CameraInfo.h>
 #include <nav_msgs/Odometry.h>
 #include <geometry_msgs/Twist.h>
+#include <std_msgs/ColorRGBA.h>
+#include <stage_ros/BlobDetection.h>
+#include <stage_ros/Blobs.h>
+#include <stage_ros/Waypoint.h>
 #include <rosgraph_msgs/Clock.h>
 
 #include <std_srvs/Empty.h>
@@ -60,8 +64,14 @@
 #define CAMERA_INFO "camera_info"
 #define ODOM "odom"
 #define BASE_SCAN "base_scan"
+#define BLOB_FINDER "blob"
 #define BASE_POSE_GROUND_TRUTH "base_pose_ground_truth"
 #define CMD_VEL "cmd_vel"
+#define CLEAR_WAYPOINT "clear_waypoint"
+#define WAYPOINT "waypoint"
+
+#define ODOM_TRANSLATION_VARIANCE 0.005
+#define ODOM_ROTATION_VARIANCE 0.005
 
 // Our node
 class StageNode
@@ -78,6 +88,7 @@ private:
     std::vector<Stg::ModelCamera *> cameramodels;
     std::vector<Stg::ModelRanger *> lasermodels;
     std::vector<Stg::ModelPosition *> positionmodels;
+    std::vector<Stg::ModelBlobfinder *> blobmodels;
 
     //a structure representing a robot inthe simulator
     struct StageRobot
@@ -86,6 +97,8 @@ private:
         Stg::ModelPosition* positionmodel; //one position
         std::vector<Stg::ModelCamera *> cameramodels; //multiple cameras per position
         std::vector<Stg::ModelRanger *> lasermodels; //multiple rangers per position
+        std::vector<Stg::ModelBlobfinder *> blobmodels; //multiple blob per position
+
 
         //ros publishers
         ros::Publisher odom_pub; //one odom
@@ -95,8 +108,23 @@ private:
         std::vector<ros::Publisher> depth_pubs; //multiple depths
         std::vector<ros::Publisher> camera_pubs; //multiple cameras
         std::vector<ros::Publisher> laser_pubs; //multiple lasers
-
+        std::vector<ros::Publisher> blob_pubs; //multiple blbos
         ros::Subscriber cmdvel_sub; //one cmd_vel subscriber
+        ros::Subscriber waypoint_sub; //one cmd_vel subscriber
+
+        ros::ServiceServer clear_waypoints_srv_;
+        inline void waypointCallback(const boost::shared_ptr<stage_ros::Waypoint const>& msg)
+        {
+            Stg::ModelPosition::Waypoint wp(Stg::Pose(msg->x, msg->y, 0, 0), Stg::Color(msg->color.r, msg->color.g, msg->color.b, msg->color.a));
+            positionmodel->waypoints.push_back(wp);
+        }
+
+        inline bool clearWayPoint(std_srvs::Empty::Request& request, std_srvs::Empty::Response& response)
+        {
+            ROS_INFO("Resetting waypoint for a robot");
+            positionmodel->waypoints.clear();
+            return true;
+        }
     };
 
     std::vector<StageRobot const *> robotmodels_;
@@ -104,7 +132,7 @@ private:
     // Used to remember initial poses for soft reset
     std::vector<Stg::Pose> initial_poses;
     ros::ServiceServer reset_srv_;
-  
+
     ros::Publisher clock_pub_;
     
     bool isDepthCanonical;
@@ -243,6 +271,10 @@ StageNode::ghfunc(Stg::Model* mod, StageNode* node)
   if (dynamic_cast<Stg::ModelCamera *>(mod)) {
      node->cameramodels.push_back(dynamic_cast<Stg::ModelCamera *>(mod));
   }
+
+  if (dynamic_cast<Stg::ModelBlobfinder *>(mod)) {
+     node->blobmodels.push_back(dynamic_cast<Stg::ModelBlobfinder *>(mod));
+  }
 }
 
 
@@ -329,6 +361,12 @@ StageNode::SubscribeModels()
     {
         StageRobot* new_robot = new StageRobot;
         new_robot->positionmodel = this->positionmodels[r];
+        new_robot->clear_waypoints_srv_ = n_.advertiseService(
+            mapName(CLEAR_WAYPOINT, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 
+            &StageNode::StageRobot::clearWayPoint, 
+            new_robot
+        );
+
         new_robot->positionmodel->Subscribe();
 
 	ROS_INFO( "Subscribed to Stage position model \"%s\"", this->positionmodels[r]->Token() ); 
@@ -340,6 +378,16 @@ StageNode::SubscribeModels()
                 new_robot->lasermodels.push_back(this->lasermodels[s]);
                 this->lasermodels[s]->Subscribe();
 	      ROS_INFO( "subscribed to Stage ranger \"%s\"", this->lasermodels[s]->Token() ); 
+            }
+        }
+
+         for (size_t s = 0; s < this->blobmodels.size(); s++)
+        {
+      if (this->blobmodels[s] and this->blobmodels[s]->Parent() == new_robot->positionmodel)
+            {
+                new_robot->blobmodels.push_back(this->blobmodels[s]);
+                this->blobmodels[s]->Subscribe();
+          ROS_INFO( "subscribed to Stage blob \"%s\"", this->blobmodels[s]->Token() ); 
             }
         }
 
@@ -355,14 +403,16 @@ StageNode::SubscribeModels()
         }
 
 	// TODO - print the topic names nicely as well
-        ROS_INFO("Robot %s provided %lu rangers and %lu cameras",
+        ROS_INFO("Robot %s provided %lu rangers %lu blobs and %lu cameras",
 		 new_robot->positionmodel->Token(),
 		 new_robot->lasermodels.size(),
-		 new_robot->cameramodels.size() );
+		 new_robot->blobmodels.size(),
+         new_robot->cameramodels.size() );
 
         new_robot->odom_pub = n_.advertise<nav_msgs::Odometry>(mapName(ODOM, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10);
         new_robot->ground_truth_pub = n_.advertise<nav_msgs::Odometry>(mapName(BASE_POSE_GROUND_TRUTH, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10);
         new_robot->cmdvel_sub = n_.subscribe<geometry_msgs::Twist>(mapName(CMD_VEL, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10, boost::bind(&StageNode::cmdvelReceived, this, r, _1));
+        new_robot->waypoint_sub = n_.subscribe<stage_ros::Waypoint>(mapName(WAYPOINT, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10, &StageNode::StageRobot::waypointCallback, new_robot);
 
         for (size_t s = 0;  s < new_robot->lasermodels.size(); ++s)
         {
@@ -370,6 +420,15 @@ StageNode::SubscribeModels()
                 new_robot->laser_pubs.push_back(n_.advertise<sensor_msgs::LaserScan>(mapName(BASE_SCAN, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
             else
                 new_robot->laser_pubs.push_back(n_.advertise<sensor_msgs::LaserScan>(mapName(BASE_SCAN, r, s, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
+
+        }
+
+        for (size_t s = 0;  s < new_robot->blobmodels.size(); ++s)
+        {
+            if (new_robot->blobmodels.size() == 1)
+                new_robot->blob_pubs.push_back(n_.advertise<stage_ros::Blobs>(mapName(BLOB_FINDER, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
+            else
+                new_robot->blob_pubs.push_back(n_.advertise<stage_ros::Blobs>(mapName(BLOB_FINDER, r, s, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
 
         }
 
@@ -443,7 +502,6 @@ StageNode::WorldCallback()
     for (size_t r = 0; r < this->robotmodels_.size(); ++r)
     {
         StageRobot const * robotmodel = this->robotmodels_[r];
-
         //loop on the laser devices for the current robot
         for (size_t s = 0; s < robotmodel->lasermodels.size(); ++s)
         {
@@ -523,6 +581,17 @@ StageNode::WorldCallback()
         //
         odom_msg.header.frame_id = mapName("odom", r, static_cast<Stg::Model*>(robotmodel->positionmodel));
         odom_msg.header.stamp = sim_time;
+        odom_msg.twist.covariance[0] = ODOM_TRANSLATION_VARIANCE;
+        odom_msg.twist.covariance[35] = ODOM_ROTATION_VARIANCE;
+        odom_msg.pose.covariance[0] = ODOM_TRANSLATION_VARIANCE;
+        odom_msg.pose.covariance[35] = ODOM_ROTATION_VARIANCE;
+        for (int i=1 ; i<5 ; i++)
+        {
+            odom_msg.twist.covariance[i*7] = ODOM_TRANSLATION_VARIANCE;
+            odom_msg.pose.covariance[i*7] = ODOM_TRANSLATION_VARIANCE;
+        }
+
+
 
         robotmodel->odom_pub.publish(odom_msg);
 
@@ -738,6 +807,69 @@ StageNode::WorldCallback()
             }
 
         }
+
+        //loop on the blob finders for the current robot
+        for (size_t s = 0; s < robotmodel->blobmodels.size(); ++s)
+        {
+            Stg::ModelBlobfinder const* blobmodel = robotmodel->blobmodels[s];
+            const std::vector<Stg::ModelBlobfinder::Blob>& blobs = blobmodel->GetBlobs();
+            stage_ros::Blobs blobs_msg;
+
+            blobs_msg.header.stamp = sim_time;
+            blobs_msg.width = blobmodel->scan_width;
+            blobs_msg.height = blobmodel->scan_height;
+            
+            if (robotmodel->blobmodels.size() > 1)
+                blobs_msg.header.frame_id = mapName("blob_link", r, s, static_cast<Stg::Model*>(robotmodel->positionmodel));
+            else
+                blobs_msg.header.frame_id = mapName("blob_link", r, static_cast<Stg::Model*>(robotmodel->positionmodel));
+
+                
+            // for now we access only the zeroth sensor of the ranger - good
+            // enough for most laser models that have a single beam origin
+            for (size_t blob_idx = 0; blob_idx < blobs.size(); blob_idx++)
+            {
+                const Stg::ModelBlobfinder::Blob& blob = blobs[blob_idx];
+
+                
+                // Translate into ROS message format and publish
+                stage_ros::BlobDetection blob_msg;
+                
+                std_msgs::ColorRGBA color_msg;
+                color_msg.r = blob.color.r;
+                color_msg.g = blob.color.g;
+                color_msg.b = blob.color.b;
+                color_msg.a = blob.color.a;
+                blob_msg.color = color_msg;
+                
+                blob_msg.bottom = blob.bottom;
+                blob_msg.left = blob.left;
+                blob_msg.range = blob.range;
+                blob_msg.right = blob.right;
+                blob_msg.top = blob.top;
+
+                blobs_msg.detections.push_back(blob_msg);
+                
+                // Also publish the base->blob_link Tx.  This could eventually move
+                // into being retrieved from the param server as a static Tx.
+                Stg::Pose lp = blobmodel->GetPose();
+                tf::Quaternion blobQ;
+                blobQ.setRPY(0.0, 0.0, lp.a);
+                tf::Transform txBlob =  tf::Transform(blobQ, tf::Point(lp.x, lp.y, robotmodel->positionmodel->GetGeom().size.z + lp.z));
+
+                if (robotmodel->blobmodels.size() > 1)
+                    tf.sendTransform(tf::StampedTransform(txBlob, sim_time,
+                                                          mapName("base_link", r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
+                                                          mapName("blob_link", r, s, static_cast<Stg::Model*>(robotmodel->positionmodel))));
+                else
+                    tf.sendTransform(tf::StampedTransform(txBlob, sim_time,
+                                                          mapName("base_link", r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
+                                                         mapName("blob_link", r, static_cast<Stg::Model*>(robotmodel->positionmodel))));
+            }
+            robotmodel->blob_pubs[s].publish(blobs_msg);
+        }
+
+        
     }
 
     this->base_last_globalpos_time = this->sim_time;
