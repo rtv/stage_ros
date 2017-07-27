@@ -15,14 +15,28 @@ find_package(catkin REQUIRED
 find_package(Boost REQUIRED COMPONENTS system thread)
 
 find_package(stage REQUIRED)
-
 include_directories(
   ${catkin_INCLUDE_DIRS}
   ${Boost_INCLUDE_DIRS}
   ${STAGE_INCLUDE_DIRS}
 )
 
-catkin_package()
+add_message_files(
+  FILES
+  BlobDetection.msg
+  Blobs.msg
+  Waypoint.msg
+)
+
+generate_messages(
+  DEPENDENCIES
+  std_msgs
+  sensor_msgs
+)
+
+catkin_package(
+  CATKIN_DEPENDS message_runtime
+)
 
 # Declare a cpp executable
 add_executable(stageros src/stageros.cpp)
