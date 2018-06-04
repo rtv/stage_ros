@@ -27,10 +27,16 @@ add_message_files(
   Blobs.msg
   Waypoint.msg
 )
+add_service_files(
+  FILES
+  reset_position.srv
+#   Service2.srv
+)
 
 generate_messages(
   DEPENDENCIES
   std_msgs
+  # geometry_msg
   sensor_msgs
 )
 

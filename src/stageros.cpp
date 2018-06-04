@@ -54,6 +54,8 @@
 #include <stage_ros/Waypoint.h>
 #include <rosgraph_msgs/Clock.h>
 
+#include "stage_ros/reset_position.h"
+
 #include <std_srvs/Empty.h>
 
 #include "tf/transform_broadcaster.h"
@@ -132,6 +134,8 @@ private:
     // Used to remember initial poses for soft reset
     std::vector<Stg::Pose> initial_poses;
     ros::ServiceServer reset_srv_;
+    ros::ServiceServer reset_srv_robot_0;
+
 
     ros::Publisher clock_pub_;
     
@@ -192,6 +196,9 @@ public:
 
     // Service callback for soft reset
     bool cb_reset_srv(std_srvs::Empty::Request& request, std_srvs::Empty::Response& response);
+
+    // Service callback for soft reset
+    bool cb_reset_robot_0_srv(stage_ros::reset_position::Request& request, stage_ros::reset_position::Response& response);
 
     // The main simulator object
     Stg::World* world;
@@ -278,8 +285,6 @@ StageNode::ghfunc(Stg::Model* mod, StageNode* node)
 }
 
 
-
-
 bool
 StageNode::cb_reset_srv(std_srvs::Empty::Request& request, std_srvs::Empty::Response& response)
 {
@@ -288,6 +293,21 @@ StageNode::cb_reset_srv(std_srvs::Empty::Request& request, std_srvs::Empty::Resp
     this->positionmodels[r]->SetPose(this->initial_poses[r]);
     this->positionmodels[r]->SetStall(false);
   }
+  return true;
+}
+
+
+bool
+StageNode::cb_reset_robot_0_srv(stage_ros::reset_position::Request& request, stage_ros::reset_position::Response& response)
+{
+  ROS_INFO("Resetting stage!");
+  Stg::Pose pose;
+  pose.x = request.position.position.x;
+  pose.y = request.position.position.y;
+  pose.z = 0;
+  pose.a = request.position.orientation.w;
+  this->positionmodels[0]->SetPose(pose);
+  // this->positionmodels[0]->SetStall(false);
   return true;
 }
 
@@ -454,7 +474,7 @@ StageNode::SubscribeModels()
 
     // advertising reset service
     reset_srv_ = n_.advertiseService("reset_positions", &StageNode::cb_reset_srv, this);
-
+    reset_srv_robot_0 = n_.advertiseService("reset_position_robot_0", &StageNode::cb_reset_robot_0_srv, this);
     return(0);
 }
 
