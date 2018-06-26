@@ -99,11 +99,10 @@ private:
   ros::Publisher clock_pub_;
   
   bool isDepthCanonical;
-  bool use_model_names;
   
   // A helper function that is executed for each stage model.  We use it
   // to search for models of interest.
-  static void ghfunc(Stg::Model* mod, StageNode* node);
+  static void s_import_models(Stg::Model* mod, StageNode* node);
   
   static bool s_update_world(Stg::World* world, StageNode* node){
     node->WorldCallback();
@@ -140,7 +139,7 @@ private:
 public:
   // Constructor; stage itself needs argc/argv.  fname is the .world file
   // that stage should load.
-  StageNode(int argc, char** argv, bool gui, const char* fname, bool use_model_names);
+  StageNode(int argc, char** argv, bool gui, const char* fname );
   ~StageNode();
   
   void ImportModel(Stg::Model* mod );
@@ -189,8 +188,7 @@ StageNode::ImportModel(Stg::Model* mod )
   boost::mutex::scoped_lock lock(msg_lock);
 
   if (dynamic_cast<Stg::ModelRanger *>(mod)) {
-    printf( "importing ranger\n" );
-    
+        
     Stg::ModelRanger* mr = dynamic_cast<Stg::ModelRanger *>(mod);
     assert(mr);
     
@@ -204,16 +202,11 @@ StageNode::ImportModel(Stg::Model* mod )
 		     (void*)r );
 
     mr->Subscribe(); // TODO: wait until someone needs the data
-
-    printf( "ranger imported %p %p %s\n", r, mod, mod->Token() );
   }
-  
-  if (dynamic_cast<Stg::ModelPosition *>(mod)) {
-    printf( "importing position\n" );
-
+  else if (dynamic_cast<Stg::ModelPosition *>(mod)) {
     Stg::ModelPosition * mp = dynamic_cast<Stg::ModelPosition *>(mod);
       // remember initial poses
-      positionmodels.push_back(mp);
+    positionmodels.push_back(mp);
       initial_poses.push_back(mp->GetGlobalPose());
 
       Position* p = new Position;
@@ -229,25 +222,17 @@ StageNode::ImportModel(Stg::Model* mod )
 		       (void*)p );
 
       mp->Subscribe(); // TODO: wait until someone needs the data
-      
-      printf( "position imported %p %p %s\n", p, mp, mp->Token() );
     }
-
-  if (dynamic_cast<Stg::ModelCamera *>(mod)) {
-    printf( "importing camera\n" );
-    //cameramodels.push_back(dynamic_cast<Stg::ModelCamera *>(mod));
-    puts( "STAGEROS WARN: Camera models/topics not currently supported" );
+  else if (dynamic_cast<Stg::ModelCamera *>(mod)) {
+    ROS_WARN( "STAGEROS WARN: Camera models/topics not currently supported" );
   }
 }
 
 void
-StageNode::ghfunc(Stg::Model* mod, StageNode* node)
+StageNode::s_import_models(Stg::Model* mod, StageNode* node)
 {
   node->ImportModel( mod );
 }
-
-
-
 
 bool
 StageNode::cb_reset_srv(std_srvs::Empty::Request& request, std_srvs::Empty::Response& response)
@@ -272,9 +257,8 @@ StageNode::cmdvelReceived(int idx, const boost::shared_ptr<geometry_msgs::Twist 
     this->base_last_cmd = this->sim_time;
 }
 
-StageNode::StageNode(int argc, char** argv, bool gui, const char* fname, bool use_model_names)
+StageNode::StageNode(int argc, char** argv, bool gui, const char* fname )
 {
-    this->use_model_names = use_model_names;
     this->sim_time.fromSec(0.0);
     this->base_last_cmd.fromSec(0.0);
     double t;
@@ -308,7 +292,7 @@ StageNode::StageNode(int argc, char** argv, bool gui, const char* fname, bool us
 
     // install update callbacks and subscribe to every model
     // (todo: on demand subscriptions)
-    this->world->ForEachDescendant((Stg::model_callback_t)ghfunc, this);
+    this->world->ForEachDescendant((Stg::model_callback_t)s_import_models, this);
 
     // every time the world is updated, we publish the sim_time
     this->world->AddUpdateCallback((Stg::world_callback_t)s_update_world, this);
@@ -322,8 +306,8 @@ StageNode::StageNode(int argc, char** argv, bool gui, const char* fname, bool us
 
 StageNode::~StageNode()
 {    
-  //for (std::vector<StageRobot const*>::iterator r = this->robotmodels_.begin(); r != this->robotmodels_.end(); ++r)
-  //     delete *r;
+  // we leak all the installed callback structures here.
+  // this is not a problem right now, since this is destroyed only at exit.
 }
 
 bool
@@ -529,16 +513,14 @@ main(int argc, char** argv)
     ros::init(argc, argv, "stageros");
 
     bool gui = true;
-    bool use_model_names = false;
+
     for(int i=0;i<(argc-1);i++)
     {
         if(!strcmp(argv[i], "-g"))
             gui = false;
-        if(!strcmp(argv[i], "-u"))
-            use_model_names = true;
     }
 
-    StageNode sn(argc-1,argv,gui,argv[argc-1], use_model_names);
+    StageNode sn(argc-1,argv,gui,argv[argc-1] );
 
     boost::thread t = boost::thread(boost::bind(&ros::spin));
 
