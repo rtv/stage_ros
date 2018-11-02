@@ -135,6 +135,8 @@ private:
   ros::Time base_last_globalpos_time;
   // Last published global pose of each robot
   std::vector<Stg::Pose> base_last_globalpos;
+
+  int position_model_idx=0;
   
 public:
   // Constructor; stage itself needs argc/argv.  fname is the .world file
@@ -215,13 +217,15 @@ StageNode::ImportModel(Stg::Model* mod )
 
       p->odom_pub = n_.advertise<nav_msgs::Odometry>(mapName(ODOM, mp), 10);
       p->ground_truth_pub = n_.advertise<nav_msgs::Odometry>(mapName(BASE_POSE_GROUND_TRUTH, mp), 10);
-      p->cmdvel_sub = n_.subscribe<geometry_msgs::Twist>(mapName(CMD_VEL, mp), 10, boost::bind(&StageNode::cmdvelReceived, this, 0, _1));
+      p->cmdvel_sub = n_.subscribe<geometry_msgs::Twist>(mapName(CMD_VEL, mp), 10, boost::bind(&StageNode::cmdvelReceived, this, position_model_idx
+            , _1));
 
       mp->AddCallback( Stg::Model::CB_UPDATE,
 		       (Stg::model_callback_t)s_update_position,
 		       (void*)p );
 
       mp->Subscribe(); // TODO: wait until someone needs the data
+      position_model_idx+=1;
     }
   else if (dynamic_cast<Stg::ModelCamera *>(mod)) {
     ROS_WARN( "STAGEROS WARN: Camera models/topics not currently supported" );
